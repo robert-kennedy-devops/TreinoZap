@@ -1,0 +1,87 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: treinozap_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-treinozap}
+      POSTGRES_USER:     ${POSTGRES_USER:-treinozap}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-treinozap}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-treinozap} -d ${POSTGRES_DB:-treinozap}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: treinozap_backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV:                ${APP_ENV:-development}
+      DATABASE_URL:           ${DATABASE_URL:-postgres://treinozap:treinozap@postgres:5432/treinozap?sslmode=disable}
+      HTTP_PORT:              ${HTTP_PORT:-8080}
+      JWT_SECRET:             ${JWT_SECRET:?JWT_SECRET obrigatório no .env}
+      JWT_EXPIRES_IN:         ${JWT_EXPIRES_IN:-24h}
+      WHATSAPP_PROVIDER:      ${WHATSAPP_PROVIDER:-mock}
+      WHATSAPP_ADMIN_ENABLED: ${WHATSAPP_ADMIN_ENABLED:-true}
+      ADMIN_EMAIL:            ${ADMIN_EMAIL:-admin@treinozap.com}
+    ports:
+      - "${HTTP_PORT:-8080}:8080"
+    volumes:
+      - whatsapp_store:/app/whatsapp-store
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080/api/v1}
+    container_name: treinozap_frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+
+  # Worker standalone — apenas se WHATSAPP_PROVIDER=whatsmeow e quiser processo separado.
+  # Normalmente desnecessário: a API já gerencia o whatsmeow diretamente.
+  # Para ativar: docker compose --profile worker up
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: treinozap_worker
+    restart: unless-stopped
+    profiles: [worker]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL:      ${DATABASE_URL:-postgres://treinozap:treinozap@postgres:5432/treinozap?sslmode=disable}
+      JWT_SECRET:        ${JWT_SECRET:?JWT_SECRET obrigatório no .env}
+      WHATSAPP_PROVIDER: ${WHATSAPP_PROVIDER:-mock}
+      ADMIN_EMAIL:       ${ADMIN_EMAIL:-admin@treinozap.com}
+    volumes:
+      - whatsapp_store:/app/whatsapp-store
+    command: ["./worker"]
+
+volumes:
+  postgres_data:
+  whatsapp_store:
